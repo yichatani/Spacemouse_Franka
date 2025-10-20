@@ -170,5 +170,7 @@ if __name__ == "__main__":
                 print("tf6:", np.round(tf6, 3))
             if sm.is_button_pressed(0):
                 print("Btn0 pressed")
+            if sm.is_button_pressed(1):
+                print("Btn1 pressed")
             time.sleep(0.01)
 
