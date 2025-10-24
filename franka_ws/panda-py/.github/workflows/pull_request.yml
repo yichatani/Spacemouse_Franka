@@ -1,0 +1,19 @@
+name: Check pull request
+
+on:
+  pull_request:
+
+jobs:
+  build_wheels:
+    name: Build wheels for libfranka ${{ matrix.libfranka-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        libfranka-version: ["0.7.1", "0.8.0", "0.9.2", "0.13.3"]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v3
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel==2.16.2
+      - name: Build using cibuildwheel
+        run: ./bin/build.sh "${{ matrix.libfranka-version }}"

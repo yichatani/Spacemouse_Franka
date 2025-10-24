@@ -1,0 +1,49 @@
+name: Check commit
+
+permissions:
+  contents: write
+  id-token: write
+  pages: write
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  build_wheels:
+    name: Build wheels for libfranka ${{ matrix.libfranka-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        libfranka-version: ["0.7.1", "0.8.0", "0.9.2", "0.13.3"]
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v3
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel==2.16.2
+      - name: Build using cibuildwheel
+        run: ./bin/build.sh "${{ matrix.libfranka-version }}"
+  documentation:
+    name: "Build and deploy documentation"
+    needs: [build_wheels]
+    runs-on: ubuntu-latest
+    env:
+      LIBFRANKA_VER: "0.9.2"
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-python@v3
+      - name: Install requirements
+        run: ./bin/before_install_ubuntu.sh
+      - name: Build package
+        run: pip install .[docs]
+      - name: Build documentation
+        run: cd docs && make html
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./docs/_build/html
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
