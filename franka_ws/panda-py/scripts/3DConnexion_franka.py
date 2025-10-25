@@ -22,7 +22,7 @@ ESTOP_BTN = 1
 NEUTRAL_ENTER = 0.08
 NEUTRAL_EXIT  = 0.12
 
-XYZ_MIN = np.array([-2.00, -2.00, 0.02])
+XYZ_MIN = np.array([-2.00, -2.00, 0.001])
 XYZ_MAX = np.array([2.00,  2.00, 0.60])
 
 ANG_VEL_DEADZONE = 0.05
@@ -90,8 +90,12 @@ def pose_publisher_proc(q: mp.Queue, stop_evt: mp.Event, pub_hz: float = 30.0):
             last_sample = sample
 
         if last_sample is not None:
-            t_sec, pos, quat = last_sample
+            # t_sec, pos, quat = last_sample
+            t_sec, pos, quat, width = last_sample
             msg.header.stamp = rospy.Time.from_sec(t_sec)
+
+            msg.header.frame_id = f"panda_link0|{width:.4f}"
+
             msg.pose.position.x, msg.pose.position.y, msg.pose.position.z = pos
             msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w = quat
             pub.publish(msg)
@@ -109,7 +113,7 @@ def main():
 
     robot = Panda(HOST)
     print("<<< Wait until move to initial position >>>")
-    robot.move_to_joint_position([ 0.1657624 ,  0.4105261 , -0.26013412, -1.99558975,  0.0918271 ,2.3915283 ,  0.63938177],
+    robot.move_to_joint_position([ 0.16492545,  0.41526617, -0.25812275, -1.99572812,  0.09467096, 2.39399699,  0.63381358],
                                  speed_factor=0.05)
     ctrl = CartesianImpedance()
     robot.start_controller(ctrl)
@@ -117,17 +121,24 @@ def main():
     try:
         print("<<< Start control! Press Ctrl+C to exit safely >>>")
         pos0, quat0 = freeze_to_measured_pose(robot)
+        # print(f"{pos0=},{quat0=}")
+        # exit()
         q_null = robot.q
         # q_null=array([ 0.1657624 ,  0.4105261 , -0.26013412, -1.99558975,  0.0918271 ,2.3915283 ,  0.63938177])
+        # quat0 = np.array([1, 0, 0, 0])
         ctrl.set_control(pos0, quat0, q_nullspace=q_null)
-
+        # print(f"{pos0=},{quat0=}")
+        # print(f"{robot.q=}")
+        # exit()
         v_state = np.zeros(3)
         w_state = np.zeros(3)
         neutral_mode = True
         pos_hold = None; quat_hold = None
 
         gripper = Gripper(HOST)
-        gripper.move(0.08, 0.05)
+        gripper.move(0.04, 0.05)
+        gripper_state = gripper.read_once()
+        gripper_width = gripper_state.width
         micro_cnt = 0
 
         with robot.create_context(CTRL_FREQ) as ctx, Spacemouse(max_value=500, deadzone=0.2, scale_factor=1.0) as sm:
@@ -157,12 +168,27 @@ def main():
                 close_pressed = sm.is_button_pressed(0)
                 open_pressed  = sm.is_button_pressed(1)
                 if close_pressed:
-                    # 避免打印卡顿，可在需要时打开
-                    # print("Closing and grasping...")
-                    _ = gripper.grasp(width=0.00, speed=0.05, force=1.0, epsilon_inner=0.03, epsilon_outer=0.03)
+                    try:
+                        # 避免打印卡顿，可在需要时打开
+                        # print("Closing and grasping...")
+                        _ = gripper.grasp(width=0.00, speed=0.05, force=1.0, epsilon_inner=0.03, epsilon_outer=0.03)
+                        # print(f"{gripper_state.width=}")
+                        # exit()
+                        # gripper.move(gripper_state.width-0.01, 2.0)
+                        # print(f"{gripper_state.is_grasped=}")
+                        # gripper.move(0.0, 0.05)
+                        gripper_state = gripper.read_once()
+                        gripper_width = gripper_state.width
+                    except Exception:
+                        print("[WARN] Gripper move blocked (maybe object inside). Ignoring.")
                 elif open_pressed:
                     # print("Opening gripper...")
-                    gripper.move(0.08, 0.05)
+                    try:
+                        gripper.move(0.04, 0.05)
+                        gripper_state = gripper.read_once()
+                        gripper_width = gripper_state.width
+                    except Exception:
+                        print("[WARN] Gripper move failed to open fully.")
 
                 if neutral_mode:
                     if u_level > NEUTRAL_EXIT:
@@ -184,7 +210,7 @@ def main():
                         # 限频发送最新姿态到队列（异步发布）
                         now_wall = time.time()
                         if now_wall - last_pub_time >= pub_period:
-                            sample = (now_wall, pos_hold.copy(), quat_hold.copy())
+                            sample = (now_wall, pos_hold.copy(), quat_hold.copy(), gripper_width)
                             try:
                                 # 丢掉旧帧，只保留最新
                                 if q.full():
@@ -209,7 +235,7 @@ def main():
                         # 限频发送最新姿态到队列
                         now_wall = time.time()
                         if now_wall - last_pub_time >= pub_period:
-                            sample = (now_wall, pos_hold.copy(), quat_hold.copy())
+                            sample = (now_wall, pos_hold.copy(), quat_hold.copy(), gripper_width)
                             try:
                                 if q.full():
                                     _ = q.get_nowait()
@@ -268,7 +294,7 @@ def main():
                 # 限频发送本帧姿态到队列（异步发布进程拿最新）
                 now_wall = time.time()
                 if now_wall - last_pub_time >= pub_period:
-                    sample = (now_wall, pos.copy(), quat.copy())
+                    sample = (now_wall, pos.copy(), quat.copy(), gripper_width)
                     try:
                         if q.full():
                             _ = q.get_nowait()
