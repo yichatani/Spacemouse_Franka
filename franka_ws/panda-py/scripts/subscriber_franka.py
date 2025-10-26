@@ -16,7 +16,8 @@ import shutil
 color_array, eef_pose_array = [], []
 recording = False
 current_time = None
-data_folder = "/home/rmx/franka_ws/panda-py/data"
+# data_folder = "/home/rmx/franka_ws/panda-py/data"
+data_folder = "/media/rmx/6C923B76923B43BC/data"
 bridge = CvBridge()
 instruction = None
 episode_num = 0 

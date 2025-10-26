@@ -13,7 +13,7 @@ import rospy
 from geometry_msgs.msg import PoseStamped
 
 HOST = "172.16.0.2"
-CTRL_FREQ = 200.0    # Python send frequency(Hz)
+CTRL_FREQ = 200.0    # Python侧发送频率（Hz)
 LIN_VEL_MAX = 0.1
 ANG_VEL_MAX = 0.8
 DEADMAN_BTN = 0
@@ -22,18 +22,18 @@ ESTOP_BTN = 1
 NEUTRAL_ENTER = 0.08
 NEUTRAL_EXIT  = 0.12
 
-XYZ_MIN = np.array([-2.00, -2.00, 0.001])
+XYZ_MIN = np.array([-2.00, -2.00, 0.000])
 XYZ_MAX = np.array([2.00,  2.00, 0.60])
 
 ANG_VEL_DEADZONE = 0.05
 PERIOD = 1.0 / CTRL_FREQ
 
-# ================== Savety Param ==================
-MAX_STEP_LIN = 0.004      # max tick move(m)
-MAX_STEP_ANG = 0.010      # max tick angle(rad)
-NEUTRAL_MICRO = 0.03      # micro threshhold
-MICRO_RELEASE_FRAMES = 6  
-OVERRUN_FACTOR = 2.0      # dt over 2×T is over time
+# ================== 安全护栏参数 ==================
+MAX_STEP_LIN = 0.004      # 每 tick 最大线位移（m）
+MAX_STEP_ANG = 0.010      # 每 tick 最大角位移（rad）
+NEUTRAL_MICRO = 0.03      # 微输入阈值
+MICRO_RELEASE_FRAMES = 6  # 微输入连续帧数（约30ms@200Hz）
+OVERRUN_FACTOR = 2.0      # dt 超过 2×周期视为超时
 # =================================================
 
 def clamp(x, lo, hi):
@@ -61,18 +61,23 @@ def freeze_to_measured_pose(robot):
     quat_m = robot.get_orientation(scalar_first=False).astype(float).reshape(4)
     return pos_m, quat_m
 
-
+# ----------------- 异步发布进程 -----------------
 def pose_publisher_proc(q: mp.Queue, stop_evt: mp.Event, pub_hz: float = 30.0):
-    
+    """
+    独立进程：从队列取 (t, pos[3], quat[4])，以 pub_hz 发布到 /franka_pose
+    只保留最新帧，永不阻塞控制环
+    """
     rospy.init_node("franka_state_pub", anonymous=True, disable_signals=True)
     pub = rospy.Publisher("/franka_pose", PoseStamped, queue_size=10)
     rate = rospy.Rate(pub_hz)
     msg = PoseStamped()
     msg.header.frame_id = "panda_link0"
 
+    # 上一次取到的数据（防止队列暂时为空时断流）
     last_sample = None
 
     while not rospy.is_shutdown() and not stop_evt.is_set():
+        # 尝试“掏空队列”，只保留最新
         drained = False
         sample = None
         while True:
@@ -97,9 +102,10 @@ def pose_publisher_proc(q: mp.Queue, stop_evt: mp.Event, pub_hz: float = 30.0):
 
         rate.sleep()
 
-# ----------------- Main -----------------
+# ----------------- 主控程序 -----------------
 def main():
-    q = mp.Queue(maxsize=1)     
+    # multiprocessing：Linux 下默认 fork，直接可用；若在其他平台需设置 mp.set_start_method('spawn')
+    q = mp.Queue(maxsize=1)     # 仅保留最新一帧
     stop_evt = mp.Event()
     pub_hz = 30.0
     proc = mp.Process(target=pose_publisher_proc, args=(q, stop_evt, pub_hz), daemon=True)
@@ -142,7 +148,7 @@ def main():
             sm.lock_rotation_axes(roll=False, pitch=False, yaw=True)
 
             last_time = ctx.time
-            last_pub_time = time.time()
+            last_pub_time = time.time()  # 仅用于限频（队列发送），不影响控制
             pub_period = 1.0 / pub_hz
 
             while ctx.ok():
@@ -163,6 +169,7 @@ def main():
                 open_pressed  = sm.is_button_pressed(1)
                 if close_pressed:
                     try:
+                        # 避免打印卡顿，可在需要时打开
                         # print("Closing and grasping...")
                         _ = gripper.grasp(width=0.00, speed=0.05, force=1.0, epsilon_inner=0.03, epsilon_outer=0.03)
                         # print(f"{gripper_state.width=}")
@@ -200,10 +207,12 @@ def main():
                         q_null = robot.q
                         ctrl.set_control(pos_hold, quat_hold, q_nullspace=q_null)
 
+                        # 限频发送最新姿态到队列（异步发布）
                         now_wall = time.time()
                         if now_wall - last_pub_time >= pub_period:
                             sample = (now_wall, pos_hold.copy(), quat_hold.copy(), gripper_width)
                             try:
+                                # 丢掉旧帧，只保留最新
                                 if q.full():
                                     _ = q.get_nowait()
                                 q.put_nowait(sample)
@@ -223,6 +232,7 @@ def main():
                         q_null = robot.q
                         ctrl.set_control(pos_hold, quat_hold, q_nullspace=q_null)
 
+                        # 限频发送最新姿态到队列
                         now_wall = time.time()
                         if now_wall - last_pub_time >= pub_period:
                             sample = (now_wall, pos_hold.copy(), quat_hold.copy(), gripper_width)
@@ -281,6 +291,7 @@ def main():
                 q_null = robot.q
                 ctrl.set_control(pos, quat, q_nullspace=q_null)
 
+                # 限频发送本帧姿态到队列（异步发布进程拿最新）
                 now_wall = time.time()
                 if now_wall - last_pub_time >= pub_period:
                     sample = (now_wall, pos.copy(), quat.copy(), gripper_width)
